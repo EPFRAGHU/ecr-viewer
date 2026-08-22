@@ -1,4 +1,6 @@
 import os
+import tempfile
+import threading
 from datetime import date
 from functools import wraps
 
@@ -7,6 +9,7 @@ from sqlalchemy import select, or_, and_
 from werkzeug.security import check_password_hash
 
 import csv_upload
+import jobs
 from db import (
     engine, init_db, establishments, ecr_monthly,
     get_data_stats, get_recent_uploads, get_overall_upload_status,
@@ -18,6 +21,8 @@ init_db()
 
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME")
 ADMIN_PASSWORD_HASH = os.environ.get("ADMIN_PASSWORD_HASH")
+
+UPLOAD_TMP_DIR = os.path.join(tempfile.gettempdir(), "ecr_viewer_uploads")
 
 # Display order: Apr, May, ... Dec, Jan, Feb, Mar
 DISPLAY_MONTHS = [4, 5, 6, 7, 8, 9, 10, 11, 12, 1, 2, 3]
@@ -104,7 +109,57 @@ def _render_admin_upload(summary=None):
 @app.route("/admin/upload", methods=["GET"])
 @admin_required
 def admin_upload_page():
-    return _render_admin_upload()
+    summary = None
+    job_id = request.args.get("job")
+    if job_id:
+        job = jobs.get_job(job_id)
+        if job and job["status"] == "done":
+            summary = job["summary"]
+        elif job and job["status"] == "error":
+            summary = {"type": job["type"], "error": job["error"]}
+    return _render_admin_upload(summary=summary)
+
+
+def _run_master_job(job_id, path, filename, admin_user):
+    def progress_cb(done, total):
+        jobs.update_job(job_id, processed=done, total=total)
+    try:
+        summary = csv_upload.process_master_csv(path, filename, admin_user, progress_cb=progress_cb)
+        summary["type"] = "master"
+        jobs.update_job(job_id, status="done", summary=summary)
+    except csv_upload.UploadError as e:
+        jobs.update_job(job_id, status="error", error=str(e))
+    except Exception as e:
+        app.logger.exception("Unexpected error processing master CSV upload")
+        jobs.update_job(job_id, status="error", error=f"Unexpected error while processing the file: {e}")
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+def _run_ecr_job(job_id, path, filename, admin_user, fy_year, fy_month, calendar_year):
+    def progress_cb(done, total):
+        jobs.update_job(job_id, processed=done, total=total)
+    try:
+        summary = csv_upload.process_ecr_csv(
+            path, filename, admin_user, fy_year, fy_month, calendar_year, progress_cb=progress_cb
+        )
+        summary["type"] = "ecr"
+        summary["fy_label"] = f"{fy_year}-{str(fy_year + 1)[-2:]}"
+        summary["month_label"] = MONTH_LABEL.get(fy_month, "?")
+        jobs.update_job(job_id, status="done", summary=summary)
+    except csv_upload.UploadError as e:
+        jobs.update_job(job_id, status="error", error=str(e))
+    except Exception as e:
+        app.logger.exception("Unexpected error processing ECR CSV upload")
+        jobs.update_job(job_id, status="error", error=f"Unexpected error while processing the file: {e}")
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
 
 
 @app.route("/admin/upload/master", methods=["POST"])
@@ -112,14 +167,17 @@ def admin_upload_page():
 def admin_upload_master():
     file = request.files.get("file")
     try:
-        summary = csv_upload.process_master_csv(file, session.get("admin_user", "admin"))
-        summary["type"] = "master"
+        path = csv_upload.save_upload(file, UPLOAD_TMP_DIR)
     except csv_upload.UploadError as e:
-        summary = {"type": "master", "error": str(e)}
-    except Exception as e:
-        app.logger.exception("Unexpected error processing master CSV upload")
-        summary = {"type": "master", "error": f"Unexpected error while processing the file: {e}"}
-    return _render_admin_upload(summary=summary)
+        return jsonify({"error": str(e)}), 400
+
+    job_id = jobs.new_job("master")
+    threading.Thread(
+        target=_run_master_job,
+        args=(job_id, path, file.filename, session.get("admin_user", "admin")),
+        daemon=True,
+    ).start()
+    return jsonify({"job_id": job_id})
 
 
 @app.route("/admin/upload/ecr", methods=["POST"])
@@ -130,23 +188,29 @@ def admin_upload_ecr():
         fy_year = int(request.form.get("fy_year"))
         fy_month = int(request.form.get("fy_month"))
     except (TypeError, ValueError):
-        return _render_admin_upload(
-            summary={"type": "ecr", "error": "Please select a valid Financial Year and Month."}
-        )
+        return jsonify({"error": "Please select a valid Financial Year and Month."}), 400
     try:
-        calendar_year = calendar_year_for(fy_year, fy_month)
-        summary = csv_upload.process_ecr_csv(
-            file, session.get("admin_user", "admin"), fy_year, fy_month, calendar_year
-        )
-        summary["type"] = "ecr"
-        summary["fy_label"] = f"{fy_year}-{str(fy_year + 1)[-2:]}"
-        summary["month_label"] = MONTH_LABEL.get(fy_month, "?")
+        path = csv_upload.save_upload(file, UPLOAD_TMP_DIR)
     except csv_upload.UploadError as e:
-        summary = {"type": "ecr", "error": str(e)}
-    except Exception as e:
-        app.logger.exception("Unexpected error processing ECR CSV upload")
-        summary = {"type": "ecr", "error": f"Unexpected error while processing the file: {e}"}
-    return _render_admin_upload(summary=summary)
+        return jsonify({"error": str(e)}), 400
+
+    calendar_year = calendar_year_for(fy_year, fy_month)
+    job_id = jobs.new_job("ecr")
+    threading.Thread(
+        target=_run_ecr_job,
+        args=(job_id, path, file.filename, session.get("admin_user", "admin"), fy_year, fy_month, calendar_year),
+        daemon=True,
+    ).start()
+    return jsonify({"job_id": job_id})
+
+
+@app.route("/admin/upload/status/<job_id>")
+@admin_required
+def admin_upload_status(job_id):
+    job = jobs.get_job(job_id)
+    if not job:
+        return jsonify({"status": "not_found"}), 404
+    return jsonify(job)
 
 
 @app.route("/api/search")

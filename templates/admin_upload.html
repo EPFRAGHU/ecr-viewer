@@ -10,10 +10,12 @@
   .field select, .field input[type=file] { padding: 8px 10px; font-size: 13px; border: 1px solid var(--border); border-radius: 6px; background: white; }
   .panel button { padding: 9px 18px; font-size: 13px; font-weight: 600; color: white; background: var(--blue); border: none; border-radius: 6px; cursor: pointer; height: 37px; }
   .panel button:hover { opacity: 0.92; }
-  .spinner-row { display: none; align-items: center; gap: 8px; font-size: 13px; color: #667; margin-top: 10px; }
-  .spinner-row.active { display: flex; }
-  .spinner { width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--blue); border-radius: 50%; animation: spin 0.8s linear infinite; }
-  @keyframes spin { to { transform: rotate(360deg); } }
+  .panel button:disabled { opacity: 0.6; cursor: default; }
+  .progress-row { display: none; margin-top: 12px; }
+  .progress-row.active { display: block; }
+  .progress-track { background: #eef1f4; border-radius: 6px; height: 10px; overflow: hidden; }
+  .progress-fill { background: var(--blue); height: 100%; width: 0%; transition: width 0.2s ease; }
+  .progress-label { font-size: 12px; color: #667; margin-top: 4px; }
   .summary-box { margin-top: 16px; padding: 12px 14px; border-radius: 6px; font-size: 13px; }
   .summary-box.ok { background: var(--hit); }
   .summary-box.err { background: var(--miss); color: #a33; }
@@ -34,7 +36,7 @@
       {{ stats.master.count }} establishments on file
       {% if stats.master.last_updated %}&middot; last updated {{ stats.master.last_updated.strftime('%d %b %Y %H:%M') }}{% else %}&middot; no admin uploads yet{% endif %}
     </div>
-    <form method="post" action="{{ url_for('admin_upload_master') }}" enctype="multipart/form-data" onsubmit="return showSpinner('master-spinner')">
+    <form id="master-form" data-upload-url="{{ url_for('admin_upload_master') }}" data-kind="master">
       <div class="upload-row">
         <div class="field">
           <label for="master-file">CSV file</label>
@@ -43,7 +45,10 @@
         <button type="submit">Upload &amp; Update</button>
       </div>
     </form>
-    <div class="spinner-row" id="master-spinner"><div class="spinner"></div> Processing...</div>
+    <div class="progress-row" id="master-progress">
+      <div class="progress-track"><div class="progress-fill" id="master-progress-fill"></div></div>
+      <div class="progress-label" id="master-progress-label">Starting...</div>
+    </div>
     {% if summary and summary.type == 'master' %}
       {% if summary.error %}
         <div class="summary-box err">{{ summary.error }}</div>
@@ -68,7 +73,7 @@
       {{ stats.ecr.count }} monthly records on file
       {% if stats.ecr.last_updated %}&middot; last updated {{ stats.ecr.last_updated.strftime('%d %b %Y %H:%M') }}{% else %}&middot; no admin uploads yet{% endif %}
     </div>
-    <form method="post" action="{{ url_for('admin_upload_ecr') }}" enctype="multipart/form-data" onsubmit="return showSpinner('ecr-spinner')">
+    <form id="ecr-form" data-upload-url="{{ url_for('admin_upload_ecr') }}" data-kind="ecr">
       <div class="upload-row">
         <div class="field">
           <label for="fy_year">Financial Year</label>
@@ -89,7 +94,10 @@
         <button type="submit">Upload &amp; Update</button>
       </div>
     </form>
-    <div class="spinner-row" id="ecr-spinner"><div class="spinner"></div> Processing...</div>
+    <div class="progress-row" id="ecr-progress">
+      <div class="progress-track"><div class="progress-fill" id="ecr-progress-fill"></div></div>
+      <div class="progress-label" id="ecr-progress-label">Starting...</div>
+    </div>
     {% if summary and summary.type == 'ecr' %}
       {% if summary.error %}
         <div class="summary-box err">{{ summary.error }}</div>
@@ -139,9 +147,68 @@
   </div>
 
 <script>
-function showSpinner(id) {
-  document.getElementById(id).classList.add('active');
-  return true;
+const statusUrlBase = "{{ url_for('admin_upload_status', job_id='JOB_ID') }}".replace('JOB_ID', '');
+const uploadPageUrl = "{{ url_for('admin_upload_page') }}";
+
+function setupUploadForm(formId) {
+  const form = document.getElementById(formId);
+  const kind = form.dataset.kind;
+  const progressRow = document.getElementById(kind + '-progress');
+  const fill = document.getElementById(kind + '-progress-fill');
+  const label = document.getElementById(kind + '-progress-label');
+  const button = form.querySelector('button[type=submit]');
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    button.disabled = true;
+    progressRow.classList.add('active');
+    fill.style.width = '0%';
+    label.textContent = 'Starting...';
+
+    const formData = new FormData(form);
+    let resp, data;
+    try {
+      resp = await fetch(form.dataset.uploadUrl, { method: 'POST', body: formData });
+      data = await resp.json();
+    } catch (err) {
+      label.textContent = 'Upload failed: ' + err;
+      button.disabled = false;
+      return;
+    }
+    if (!resp.ok || data.error) {
+      label.textContent = data.error || ('Upload failed (status ' + resp.status + ')');
+      button.disabled = false;
+      return;
+    }
+    pollJob(data.job_id, kind, fill, label, button);
+  });
 }
+
+async function pollJob(jobId, kind, fill, label, button) {
+  try {
+    const res = await fetch(statusUrlBase + jobId);
+    const job = await res.json();
+    if (job.status === 'processing') {
+      const total = job.total || 0;
+      const done = job.processed || 0;
+      const pct = total ? Math.min(100, Math.round((done / total) * 100)) : 0;
+      fill.style.width = pct + '%';
+      label.textContent = total
+        ? done.toLocaleString('en-IN') + ' / ' + total.toLocaleString('en-IN') + ' rows processed (' + pct + '%)'
+        : 'Reading file...';
+      setTimeout(() => pollJob(jobId, kind, fill, label, button), 800);
+    } else {
+      fill.style.width = '100%';
+      label.textContent = job.status === 'done' ? 'Done - refreshing...' : 'Failed - refreshing...';
+      window.location = uploadPageUrl + '?job=' + jobId;
+    }
+  } catch (err) {
+    label.textContent = 'Lost connection while checking progress: ' + err;
+    button.disabled = false;
+  }
+}
+
+setupUploadForm('master-form');
+setupUploadForm('ecr-form');
 </script>
 {% endblock %}
