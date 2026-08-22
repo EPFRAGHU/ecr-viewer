@@ -147,8 +147,12 @@ def _run_ecr_job(job_id, path, filename, admin_user, fy_year, fy_month, calendar
             path, filename, admin_user, fy_year, fy_month, calendar_year, progress_cb=progress_cb
         )
         summary["type"] = "ecr"
-        summary["fy_label"] = f"{fy_year}-{str(fy_year + 1)[-2:]}"
-        summary["month_label"] = MONTH_LABEL.get(fy_month, "?")
+        if fy_year and fy_month:
+            summary["fy_label"] = f"{fy_year}-{str(fy_year + 1)[-2:]}"
+            summary["month_label"] = MONTH_LABEL.get(fy_month, "?")
+        else:
+            summary["fy_label"] = "Multiple months"
+            summary["month_label"] = summary.get("months_processed") or "(auto-detected from file)"
         jobs.update_job(job_id, status="done", summary=summary)
     except csv_upload.UploadError as e:
         jobs.update_job(job_id, status="error", error=str(e))
@@ -184,17 +188,21 @@ def admin_upload_master():
 @admin_required
 def admin_upload_ecr():
     file = request.files.get("file")
-    try:
-        fy_year = int(request.form.get("fy_year"))
-        fy_month = int(request.form.get("fy_month"))
-    except (TypeError, ValueError):
-        return jsonify({"error": "Please select a valid Financial Year and Month."}), 400
+    fy_year = fy_month = calendar_year = None
+    raw_fy_year = (request.form.get("fy_year") or "").strip()
+    raw_fy_month = (request.form.get("fy_month") or "").strip()
+    if raw_fy_year or raw_fy_month:
+        try:
+            fy_year = int(raw_fy_year)
+            fy_month = int(raw_fy_month)
+        except (TypeError, ValueError):
+            return jsonify({"error": "Please select a valid Financial Year and Month, or leave both blank for a multi-month file."}), 400
+        calendar_year = calendar_year_for(fy_year, fy_month)
     try:
         path = csv_upload.save_upload(file, UPLOAD_TMP_DIR)
     except csv_upload.UploadError as e:
         return jsonify({"error": str(e)}), 400
 
-    calendar_year = calendar_year_for(fy_year, fy_month)
     job_id = jobs.new_job("ecr")
     threading.Thread(
         target=_run_ecr_job,

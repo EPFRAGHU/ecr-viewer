@@ -76,14 +76,16 @@
     <form id="ecr-form" data-upload-url="{{ url_for('admin_upload_ecr') }}" data-kind="ecr">
       <div class="upload-row">
         <div class="field">
-          <label for="fy_year">Financial Year</label>
-          <select id="fy_year" name="fy_year" required>
+          <label for="fy_year">Financial Year <span style="font-weight:400;color:#889;">(only for single-month files)</span></label>
+          <select id="fy_year" name="fy_year">
+            <option value="">Auto-detect from file</option>
             {% for y in fy_years %}<option value="{{ y }}">{{ y }}-{{ '%02d' % ((y + 1) % 100) }}</option>{% endfor %}
           </select>
         </div>
         <div class="field">
           <label for="fy_month">Month</label>
-          <select id="fy_month" name="fy_month" required>
+          <select id="fy_month" name="fy_month">
+            <option value="">Auto-detect from file</option>
             {% for m, label in display_months %}<option value="{{ m }}">{{ label }}</option>{% endfor %}
           </select>
         </div>

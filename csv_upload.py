@@ -17,6 +17,7 @@ back with a reason rather than aborting the whole file.
 """
 import os
 import uuid
+from collections import defaultdict
 
 import pandas as pd
 
@@ -25,7 +26,7 @@ from db import (
     bulk_upsert_establishments, bulk_upsert_ecr_rows,
     existing_est_ids, existing_ecr_est_ids,
 )
-from import_data import _clean, _to_num
+from import_data import _clean, _to_num, MONTH_MAP, COL_PATTERN, yy_to_year
 
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 MAX_ERRORS_SHOWN = 50
@@ -36,6 +37,11 @@ ECR_CANDIDATE_COLUMNS = {
     "ecr_count": ["ECR_COUNT", "ECR", "NO_OF_ECR"],
     "employees": ["EMPLOYEES", "MEMBERS", "MEM", "EMPLOYEE_COUNT", "NO_OF_MEMBERS"],
     "contribution": ["CONTRIBUTION", "AMOUNT", "AMT", "CONTRIBUTION_AMOUNT", "TOTAL_AMOUNT"],
+}
+
+MONTH_LABEL = {
+    1: "Jan", 2: "Feb", 3: "Mar", 4: "Apr", 5: "May", 6: "Jun",
+    7: "Jul", 8: "Aug", 9: "Sep", 10: "Oct", 11: "Nov", 12: "Dec",
 }
 
 
@@ -155,30 +161,68 @@ def process_master_csv(path, filename, admin_user, progress_cb=None):
     }
 
 
-def process_ecr_csv(path, filename, admin_user, fy_year, fy_month, calendar_year, progress_cb=None):
+def process_ecr_csv(path, filename, admin_user, fy_year=None, fy_month=None, calendar_year=None, progress_cb=None):
+    """Accepts two CSV shapes:
+
+    - "Wide" annual format (what the MIS portal actually exports): one row per
+      establishment, with a MON_YY_ECR / MON_YY_MEM / MON_YY_AMT triple of
+      columns per month (e.g. MAR_20_ECR, MAR_20_MEM, MAR_20_AMT, FEB_20_ECR,
+      ...). Year and month are read straight from each column's own name, so
+      fy_year/fy_month/calendar_year aren't needed and every month present in
+      the file is imported in one upload.
+    - Legacy "narrow" single-month format (one ECR_COUNT/EMPLOYEES/CONTRIBUTION-
+      style column per file) - used only when no MON_YY_* columns are found;
+      requires fy_year/fy_month/calendar_year (picked on the upload form) to
+      know which month the file's single column set belongs to.
+    """
     total_rows = _count_data_rows(path)
     rows_read = 0
     inserted = updated = skipped = 0
     errors = []
+    months_seen = set()
 
     try:
         chunks = pd.read_csv(path, dtype=str, chunksize=BATCH_SIZE)
-        col_est = col_ecr = col_mem = col_amt = None
+        col_est = None
+        month_cols = None  # {(year, month): {"ECR": col, "MEM": col, "AMT": col}}
+
         for chunk_idx, chunk in enumerate(chunks):
             chunk.columns = [c.strip().upper() for c in chunk.columns]
+
             if chunk_idx == 0:
                 col_est = _match_column(chunk.columns, ECR_CANDIDATE_COLUMNS["est_id"])
                 if not col_est:
                     raise UploadError("Could not find an establishment code column (expected EST_ID).")
-                col_ecr = _match_column(chunk.columns, ECR_CANDIDATE_COLUMNS["ecr_count"])
-                col_mem = _match_column(chunk.columns, ECR_CANDIDATE_COLUMNS["employees"])
-                col_amt = _match_column(chunk.columns, ECR_CANDIDATE_COLUMNS["contribution"])
-                if not (col_ecr or col_mem or col_amt):
-                    raise UploadError("Could not find ECR count / employees / contribution columns.")
+
+                month_cols = {}
+                for col in chunk.columns:
+                    m = COL_PATTERN.match(col)
+                    if not m:
+                        continue
+                    mon = m.group("mon").upper()
+                    if mon not in MONTH_MAP:
+                        continue
+                    key = (yy_to_year(m.group("yy")), MONTH_MAP[mon])
+                    month_cols.setdefault(key, {})[m.group("field").upper()] = col
+
+                if not month_cols:
+                    col_ecr = _match_column(chunk.columns, ECR_CANDIDATE_COLUMNS["ecr_count"])
+                    col_mem = _match_column(chunk.columns, ECR_CANDIDATE_COLUMNS["employees"])
+                    col_amt = _match_column(chunk.columns, ECR_CANDIDATE_COLUMNS["contribution"])
+                    if not (col_ecr or col_mem or col_amt):
+                        raise UploadError(
+                            "Could not find ECR count / employees / contribution columns, and no "
+                            "MON_YY_ECR/MEM/AMT style columns (e.g. MAR_20_ECR) were found either."
+                        )
+                    if not (fy_year and fy_month and calendar_year):
+                        raise UploadError(
+                            "This file has a single month's columns - please also select the "
+                            "Financial Year and Month for it."
+                        )
+                    month_cols = {(calendar_year, fy_month): {"ECR": col_ecr, "MEM": col_mem, "AMT": col_amt}}
 
             start_row = rows_read + 2
             batch = []
-            seen_ids = set()
             for offset, row in enumerate(chunk.to_dict("records")):
                 i = start_row + offset
                 est_id = _clean(row.get(col_est))
@@ -188,47 +232,54 @@ def process_ecr_csv(path, filename, admin_user, fy_year, fy_month, calendar_year
                     continue
                 est_id = est_id.upper()
 
-                row_bad = False
-                ecr_count = employees = contribution = None
-                if col_ecr:
-                    raw = row.get(col_ecr)
-                    ecr_count = _to_num(raw)
-                    if ecr_count is None and _clean(raw) is not None:
-                        errors.append(f"Row {i}: invalid ECR count")
-                        row_bad = True
-                if col_mem:
-                    raw = row.get(col_mem)
-                    employees = _to_num(raw)
-                    if employees is None and _clean(raw) is not None:
-                        errors.append(f"Row {i}: invalid employee count")
-                        row_bad = True
-                if col_amt:
-                    raw = row.get(col_amt)
-                    contribution = _to_num(raw)
-                    if contribution is None and _clean(raw) is not None:
-                        errors.append(f"Row {i}: invalid contribution amount")
-                        row_bad = True
-                if row_bad:
-                    skipped += 1
-                    continue
-                if ecr_count is None and employees is None and contribution is None:
-                    errors.append(f"Row {i}: no ECR/employee/contribution data")
-                    skipped += 1
-                    continue
+                for (year, month), fields in month_cols.items():
+                    label = f"{MONTH_LABEL.get(month, month)} {year}"
+                    row_bad = False
+                    ecr_count = employees = contribution = None
+                    if fields.get("ECR"):
+                        raw = row.get(fields["ECR"])
+                        ecr_count = _to_num(raw)
+                        if ecr_count is None and _clean(raw) not in (None, "-"):
+                            errors.append(f"Row {i} ({label}): invalid ECR count")
+                            row_bad = True
+                    if fields.get("MEM"):
+                        raw = row.get(fields["MEM"])
+                        employees = _to_num(raw)
+                        if employees is None and _clean(raw) not in (None, "-"):
+                            errors.append(f"Row {i} ({label}): invalid employee count")
+                            row_bad = True
+                    if fields.get("AMT"):
+                        raw = row.get(fields["AMT"])
+                        contribution = _to_num(raw)
+                        if contribution is None and _clean(raw) not in (None, "-"):
+                            errors.append(f"Row {i} ({label}): invalid contribution amount")
+                            row_bad = True
+                    if row_bad:
+                        skipped += 1
+                        continue
+                    if ecr_count is None and employees is None and contribution is None:
+                        # Establishment simply has no data this month - not an error.
+                        continue
 
-                seen_ids.add(est_id)
-                batch.append({
-                    "est_id": est_id, "year": calendar_year, "month": fy_month,
-                    "ecr_count": ecr_count, "employees": employees, "contribution": contribution,
-                })
+                    months_seen.add((year, month))
+                    batch.append({
+                        "est_id": est_id, "year": year, "month": month,
+                        "ecr_count": ecr_count, "employees": employees, "contribution": contribution,
+                    })
             rows_read += len(chunk)
 
             if batch:
+                groups = defaultdict(list)
+                for r in batch:
+                    groups[(r["year"], r["month"])].append(r["est_id"])
                 with engine.begin() as conn:
-                    already_there = existing_ecr_est_ids(conn, calendar_year, fy_month, seen_ids)
+                    already_there = set()
+                    for (yr, mo), ids in groups.items():
+                        for eid in existing_ecr_est_ids(conn, yr, mo, set(ids)):
+                            already_there.add((eid, yr, mo))
                     bulk_upsert_ecr_rows(conn, batch)
                 for r in batch:
-                    if r["est_id"] in already_there:
+                    if (r["est_id"], r["year"], r["month"]) in already_there:
                         updated += 1
                     else:
                         inserted += 1
@@ -247,8 +298,11 @@ def process_ecr_csv(path, filename, admin_user, fy_year, fy_month, calendar_year
             rows_inserted=inserted, rows_updated=updated, rows_skipped=skipped,
         )
 
+    months_label = ", ".join(f"{MONTH_LABEL.get(m, m)} {y}" for y, m in sorted(months_seen))
+
     return {
         "rows_read": rows_read, "inserted": inserted, "updated": updated,
         "skipped": skipped, "errors": errors[:MAX_ERRORS_SHOWN],
         "errors_truncated": len(errors) > MAX_ERRORS_SHOWN,
+        "months_processed": months_label,
     }
