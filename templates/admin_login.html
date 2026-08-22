@@ -9,6 +9,9 @@
   .login-box button:hover { opacity: 0.92; }
   .login-error { background: var(--miss); color: #a33; padding: 8px 12px; border-radius: 6px; font-size: 13px; margin-bottom: 14px; }
 {% endblock %}
+{% block header_right %}
+  <a class="btn-link" href="{{ url_for('index') }}">Home</a>
+{% endblock %}
 {% block content %}
   <div class="login-box">
     <h2>Admin Login</h2>

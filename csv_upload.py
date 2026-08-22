@@ -19,7 +19,7 @@ from db import (
 )
 from import_data import _clean, _to_num
 
-MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 MAX_ERRORS_SHOWN = 50
 
 ECR_CANDIDATE_COLUMNS = {

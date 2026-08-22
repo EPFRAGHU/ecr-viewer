@@ -24,6 +24,7 @@
 {% endblock %}
 {% block header_right %}
   <span>Logged in as {{ admin_user }}</span>
+  <a class="btn-link" href="{{ url_for('index') }}">Home</a>
   <a class="btn-link" href="{{ url_for('admin_logout') }}">Logout</a>
 {% endblock %}
 {% block content %}

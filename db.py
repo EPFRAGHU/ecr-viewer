@@ -12,10 +12,13 @@ local disk is ephemeral (wiped on redeploy/restart) - so for anything
 you care about keeping, set DATABASE_URL to a real Postgres database.
 """
 import os
+from dotenv import load_dotenv
 from sqlalchemy import (
     create_engine, MetaData, Table, Column, Integer, String, Numeric, DateTime,
     UniqueConstraint, select, insert, func, text
 )
+
+load_dotenv()  # loads .env in the project root, if present - never committed (see .gitignore)
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///ecr_viewer.db")
 
