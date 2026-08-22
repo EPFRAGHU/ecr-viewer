@@ -1,16 +1,5 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<title>EPFO ECR Viewer</title>
-<style>
-  :root { --blue: #0b5394; --border: #d0d7de; --miss: #fdecea; --hit: #eaf6ea; }
-  * { box-sizing: border-box; }
-  html, body { width: 100%; overflow-x: hidden; }
-  body { font-family: Segoe UI, Arial, sans-serif; margin: 0; background: #f5f7fa; color: #1c2733; }
-  header { background: var(--blue); color: white; padding: 16px 24px; }
-  header h1 { margin: 0; font-size: 20px; font-weight: 600; }
-  .wrap { width: 100%; margin: 0 auto; padding: 20px 24px; border-left: 3px solid var(--blue); border-right: 3px solid var(--blue); min-height: 100vh; }
+{% extends "_base.html" %}
+{% block extra_style %}
   .search-box { position: relative; margin-bottom: 20px; }
   #q { width: 100%; padding: 12px 14px; font-size: 16px; border: 1px solid var(--border); border-radius: 6px; }
   #suggestions { position: absolute; top: 100%; left: 0; right: 0; background: white; border: 1px solid var(--border);
@@ -26,19 +15,15 @@
   #est-header .detail-grid .label { color: #889; font-weight: 600; margin-right: 4px; }
   .year-block { background: white; border: 1px solid var(--border); border-radius: 6px; margin-bottom: 16px; width: 100%; }
   .year-title { padding: 10px 14px; background: #eef3f8; font-weight: 600; border-bottom: 1px solid var(--border); color: var(--blue); }
-  table { border-collapse: collapse; width: 100%; table-layout: fixed; font-size: 11px; }
-  th, td { border: 1px solid var(--border); padding: 3px 2px; text-align: center; white-space: normal; word-break: break-word; overflow: hidden; }
-  th.row-label, td.row-label { width: 90px; }
-  thead th { background: #f8fafc; font-weight: 600; }
-  .missed { background: var(--miss); color: #a33; }
-  .filed { background: var(--hit); }
-  .row-label { text-align: left; font-weight: 600; background: #fafbfc; }
   #empty { color: #778; padding: 40px; text-align: center; display: none; }
-</style>
-</head>
-<body>
-<header><h1>EPFO Establishment ECR Viewer</h1></header>
-<div class="wrap">
+{% endblock %}
+{% block header_right %}
+  {% if header_info %}
+    <span>Data as of {{ header_info.date }} &middot; v{{ header_info.version }}</span>
+  {% endif %}
+  <a class="btn-link" href="{{ url_for('admin_login') }}">Admin Login</a>
+{% endblock %}
+{% block content %}
   <div class="search-box">
     <input id="q" type="text" placeholder="Search by Establishment ID or Name..." autocomplete="off">
     <div id="suggestions"></div>
@@ -52,7 +37,6 @@
 
   <div id="results"></div>
   <div id="empty">Search for an establishment above to view its ECR remittance history.</div>
-</div>
 
 <script>
 const q = document.getElementById('q');
@@ -160,6 +144,9 @@ async function loadEstablishment(estId) {
     ['City', data.city],
     ['District', data.district],
     ['Pin', data.pin],
+    ['Date of Coverage', data.cover_date],
+    ['Industry Category', data.industry],
+    ['Coverage Section', data.coverage_section],
     ['Email ID', data.email],
     ['Task ID', data.task_id],
     ['DSC', data.dsc],
@@ -204,5 +191,4 @@ async function loadEstablishment(estId) {
   `).join('');
 }
 </script>
-</body>
-</html>
+{% endblock %}

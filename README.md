@@ -63,25 +63,60 @@ existing Neon project) rather than local SQLite for anything hosted:
    python import_data.py --master master.csv --ecr ecr_2019_20.csv ...
    ```
 
-5. Since this is for personal use, you may want to put the whole Render
-   service behind Render's basic auth / IP restriction, or add a simple
-   login later — this build doesn't include authentication.
+5. Set the admin env vars below so you can update data from the browser
+   instead of re-running `import_data.py` by hand every time.
+
+## Admin upload page
+
+`/admin/upload` lets you upload an updated Establishment Master CSV or a
+single month's ECR CSV from the browser instead of running
+`import_data.py` on the command line. It's protected by a single hardcoded
+admin login (session-based) configured entirely via environment variables
+— there's no user table:
+
+```bash
+SECRET_KEY=<any long random string>       # signs the login session cookie
+ADMIN_USERNAME=<your admin username>
+ADMIN_PASSWORD_HASH=<a werkzeug password hash, see below>
+```
+
+Generate the password hash once (don't put the plain password in an env var):
+
+```bash
+python -c "from werkzeug.security import generate_password_hash; print(generate_password_hash('your-password-here'))"
+```
+
+Then go to `/admin/login`, sign in, and use `/admin/upload` to upload:
+- **Establishment Master CSV** — upserted by establishment code (`EST_ID`), same columns as the CLI importer.
+- **ECR CSV** — a *single month's* remittance file (one row per establishment: `EST_ID`, ECR count, employee count, contribution amount). You pick the Financial Year and Month it belongs to in the form, since the file itself doesn't say. This is different from the wide, multi-month CSVs `import_data.py` expects — see "Column format expected" below.
+
+Every upload is logged (admin user, filename, timestamp, rows read/inserted/updated/skipped) and the last 10 show on the upload page. The main viewer page shows "Data as of &lt;date&gt; · v&lt;count&gt;" in the top right, based on that log.
 
 ## Files
 
 | File | Purpose |
 |---|---|
-| `app.py` | Flask app: search API + establishment year-view API + page |
+| `app.py` | Flask app: search API, establishment year-view API, main page, admin auth + upload routes |
 | `db.py` | SQLAlchemy schema, works with SQLite (local) or Postgres (Render) |
-| `import_data.py` | One-off / repeatable CSV importer for master + ECR files |
+| `import_data.py` | One-off / repeatable CLI CSV importer for master + wide-format ECR files |
+| `csv_upload.py` | Row-by-row validating importer used by the `/admin/upload` page (per-row errors, insert/update counts, upload_log) |
+| `templates/_base.html` | Shared header/layout for all pages |
 | `templates/index.html` | Single-page UI: search box + year-wise tables |
-| `sample_data/` | Tiny example CSVs matching your real column format, for testing |
+| `templates/admin_login.html` | Admin login form |
+| `templates/admin_upload.html` | Admin upload forms + stats + recent upload log |
+| `sample_data/` | Example CSVs matching your real column format, for testing |
 
 ## Column format expected
 
-**Master CSV:** `OFFICE_ID, EST_ID, EST_NAME` (extra columns ignored)
+**Master CSV (CLI importer and admin upload):** requires `EST_ID`; recognizes
+`OFFICE_ID, EST_NAME, ADDRESS_LINE1, CITY, DISTRICT_NAME, PIN_CODE,
+COVER_DATE, INDUSTRY, COVERAGE_SECTION, PRIMARY_EMAIL, ACC_TASK_ID, DSC,
+ESN, F5A` (extra columns ignored) — matches the real EPFO MIS export
+columns.
 
-**ECR CSVs (wide format, any subset of months, any order):**
+**ECR CSVs, CLI importer (`import_data.py`) — wide format, any subset of
+months, any order, months can start in any month (Mar-Feb, Apr-Mar, etc.
+since columns are matched by name, not position):**
 ```
 OFFICE_ID, EST_ID, EST_NAME,
 MAR_20_ECR, MAR_20_MEM, MAR_20_AMT,
@@ -90,3 +125,12 @@ FEB_20_ECR, FEB_20_MEM, FEB_20_AMT,
 ```
 Blank cells = establishment didn't file that month (shown as "missed" in
 red on screen).
+
+**ECR CSV, admin upload page — single month, long format** (the Financial
+Year and Month are picked in the form, not read from the file):
+```
+EST_ID, ECR_COUNT, EMPLOYEES, CONTRIBUTION
+```
+Column names are matched case-insensitively with a few common aliases
+(e.g. `AMOUNT`/`AMT` for contribution, `MEMBERS`/`MEM` for employees) —
+see `ECR_CANDIDATE_COLUMNS` in `csv_upload.py`.

@@ -1,0 +1,146 @@
+{% extends "_base.html" %}
+{% block title %}Admin Upload - EPFO ECR Viewer{% endblock %}
+{% block extra_style %}
+  .panel { background: white; border: 1px solid var(--border); border-radius: 6px; padding: 18px; margin-bottom: 18px; }
+  .panel h2 { margin: 0 0 4px; font-size: 16px; color: var(--blue); }
+  .panel .stat-line { font-size: 13px; color: #667; margin-bottom: 14px; }
+  .upload-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  .field label { font-size: 12px; font-weight: 600; color: #556; }
+  .field select, .field input[type=file] { padding: 8px 10px; font-size: 13px; border: 1px solid var(--border); border-radius: 6px; background: white; }
+  .panel button { padding: 9px 18px; font-size: 13px; font-weight: 600; color: white; background: var(--blue); border: none; border-radius: 6px; cursor: pointer; height: 37px; }
+  .panel button:hover { opacity: 0.92; }
+  .spinner-row { display: none; align-items: center; gap: 8px; font-size: 13px; color: #667; margin-top: 10px; }
+  .spinner-row.active { display: flex; }
+  .spinner { width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--blue); border-radius: 50%; animation: spin 0.8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .summary-box { margin-top: 16px; padding: 12px 14px; border-radius: 6px; font-size: 13px; }
+  .summary-box.ok { background: var(--hit); }
+  .summary-box.err { background: var(--miss); color: #a33; }
+  .summary-box .counts { font-weight: 600; margin-bottom: 6px; }
+  .summary-box ul { margin: 6px 0 0; padding-left: 18px; max-height: 160px; overflow-y: auto; }
+  table.log { font-size: 12px; table-layout: auto; width: auto; min-width: 100%; }
+  table.log th, table.log td { text-align: left; padding: 5px 8px; white-space: nowrap; width: auto; }
+{% endblock %}
+{% block header_right %}
+  <span>Logged in as {{ admin_user }}</span>
+  <a class="btn-link" href="{{ url_for('admin_logout') }}">Logout</a>
+{% endblock %}
+{% block content %}
+  <div class="panel">
+    <h2>Establishment Master CSV</h2>
+    <div class="stat-line">
+      {{ stats.master.count }} establishments on file
+      {% if stats.master.last_updated %}&middot; last updated {{ stats.master.last_updated.strftime('%d %b %Y %H:%M') }}{% else %}&middot; no admin uploads yet{% endif %}
+    </div>
+    <form method="post" action="{{ url_for('admin_upload_master') }}" enctype="multipart/form-data" onsubmit="return showSpinner('master-spinner')">
+      <div class="upload-row">
+        <div class="field">
+          <label for="master-file">CSV file</label>
+          <input type="file" id="master-file" name="file" accept=".csv" required>
+        </div>
+        <button type="submit">Upload &amp; Update</button>
+      </div>
+    </form>
+    <div class="spinner-row" id="master-spinner"><div class="spinner"></div> Processing...</div>
+    {% if summary and summary.type == 'master' %}
+      {% if summary.error %}
+        <div class="summary-box err">{{ summary.error }}</div>
+      {% else %}
+        <div class="summary-box ok">
+          <div class="counts">{{ summary.rows_read }} rows read &middot; {{ summary.inserted }} inserted &middot; {{ summary.updated }} updated &middot; {{ summary.skipped }} skipped</div>
+          {% if summary.errors %}
+            <div>Skipped rows:</div>
+            <ul>
+              {% for err in summary.errors %}<li>{{ err }}</li>{% endfor %}
+            </ul>
+            {% if summary.errors_truncated %}<div>...and more not shown.</div>{% endif %}
+          {% endif %}
+        </div>
+      {% endif %}
+    {% endif %}
+  </div>
+
+  <div class="panel">
+    <h2>ECR (Monthly Return) CSV</h2>
+    <div class="stat-line">
+      {{ stats.ecr.count }} monthly records on file
+      {% if stats.ecr.last_updated %}&middot; last updated {{ stats.ecr.last_updated.strftime('%d %b %Y %H:%M') }}{% else %}&middot; no admin uploads yet{% endif %}
+    </div>
+    <form method="post" action="{{ url_for('admin_upload_ecr') }}" enctype="multipart/form-data" onsubmit="return showSpinner('ecr-spinner')">
+      <div class="upload-row">
+        <div class="field">
+          <label for="fy_year">Financial Year</label>
+          <select id="fy_year" name="fy_year" required>
+            {% for y in fy_years %}<option value="{{ y }}">{{ y }}-{{ '%02d' % ((y + 1) % 100) }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="field">
+          <label for="fy_month">Month</label>
+          <select id="fy_month" name="fy_month" required>
+            {% for m, label in display_months %}<option value="{{ m }}">{{ label }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="field">
+          <label for="ecr-file">CSV file</label>
+          <input type="file" id="ecr-file" name="file" accept=".csv" required>
+        </div>
+        <button type="submit">Upload &amp; Update</button>
+      </div>
+    </form>
+    <div class="spinner-row" id="ecr-spinner"><div class="spinner"></div> Processing...</div>
+    {% if summary and summary.type == 'ecr' %}
+      {% if summary.error %}
+        <div class="summary-box err">{{ summary.error }}</div>
+      {% else %}
+        <div class="summary-box ok">
+          <div class="counts">{{ summary.fy_label }} {{ summary.month_label }}: {{ summary.rows_read }} rows read &middot; {{ summary.inserted }} inserted &middot; {{ summary.updated }} updated &middot; {{ summary.skipped }} skipped</div>
+          {% if summary.errors %}
+            <div>Skipped rows:</div>
+            <ul>
+              {% for err in summary.errors %}<li>{{ err }}</li>{% endfor %}
+            </ul>
+            {% if summary.errors_truncated %}<div>...and more not shown.</div>{% endif %}
+          {% endif %}
+        </div>
+      {% endif %}
+    {% endif %}
+  </div>
+
+  <div class="panel">
+    <h2>Recent Uploads</h2>
+    {% if recent %}
+      <div style="overflow-x: auto;">
+      <table class="log">
+        <thead>
+          <tr><th>When</th><th>Admin</th><th>Type</th><th>Period</th><th>File</th><th>Read</th><th>Inserted</th><th>Updated</th><th>Skipped</th></tr>
+        </thead>
+        <tbody>
+          {% for u in recent %}
+          <tr>
+            <td>{{ u.uploaded_at.strftime('%d %b %Y %H:%M') }}</td>
+            <td>{{ u.admin_user }}</td>
+            <td>{{ u.data_type }}</td>
+            <td>{% if u.fy_year %}{{ u.fy_year }}-{{ '%02d' % ((u.fy_year + 1) % 100) }} {{ month_label.get(u.fy_month, '') }}{% else %}-{% endif %}</td>
+            <td>{{ u.filename }}</td>
+            <td>{{ u.rows_read }}</td>
+            <td>{{ u.rows_inserted }}</td>
+            <td>{{ u.rows_updated }}</td>
+            <td>{{ u.rows_skipped }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      </div>
+    {% else %}
+      <div class="stat-line">No uploads logged yet.</div>
+    {% endif %}
+  </div>
+
+<script>
+function showSpinner(id) {
+  document.getElementById(id).classList.add('active');
+  return true;
+}
+</script>
+{% endblock %}

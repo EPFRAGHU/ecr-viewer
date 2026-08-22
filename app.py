@@ -1,10 +1,23 @@
-from flask import Flask, request, jsonify, render_template
-from sqlalchemy import select, or_, and_
+import os
+from datetime import date
+from functools import wraps
 
-from db import engine, init_db, establishments, ecr_monthly
+from flask import Flask, request, jsonify, render_template, session, redirect, url_for
+from sqlalchemy import select, or_, and_
+from werkzeug.security import check_password_hash
+
+import csv_upload
+from db import (
+    engine, init_db, establishments, ecr_monthly,
+    get_data_stats, get_recent_uploads, get_overall_upload_status,
+)
 
 app = Flask(__name__)
+app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-change-me")
 init_db()
+
+ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME")
+ADMIN_PASSWORD_HASH = os.environ.get("ADMIN_PASSWORD_HASH")
 
 # Display order: Apr, May, ... Dec, Jan, Feb, Mar
 DISPLAY_MONTHS = [4, 5, 6, 7, 8, 9, 10, 11, 12, 1, 2, 3]
@@ -23,9 +36,117 @@ def bucket_year(calendar_year: int, calendar_month: int) -> int:
     return calendar_year
 
 
+def calendar_year_for(fy_year: int, calendar_month: int) -> int:
+    """Inverse of bucket_year: the calendar year a given month falls in
+    within display/financial year `fy_year` (Apr fy_year - Mar fy_year+1)."""
+    if calendar_month in (1, 2, 3):
+        return fy_year + 1
+    return fy_year
+
+
+def admin_required(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if not session.get("is_admin"):
+            return redirect(url_for("admin_login", next=request.path))
+        return view(*args, **kwargs)
+    return wrapped
+
+
 @app.route("/")
 def index():
-    return render_template("index.html")
+    status = get_overall_upload_status()
+    header_info = None
+    if status["last_updated"]:
+        header_info = {
+            "date": status["last_updated"].strftime("%d %b %Y"),
+            "version": status["version"],
+        }
+    return render_template("index.html", header_info=header_info)
+
+
+@app.route("/admin/login", methods=["GET", "POST"])
+def admin_login():
+    error = None
+    if request.method == "POST":
+        username = request.form.get("username", "")
+        password = request.form.get("password", "")
+        if (ADMIN_USERNAME and ADMIN_PASSWORD_HASH
+                and username == ADMIN_USERNAME
+                and check_password_hash(ADMIN_PASSWORD_HASH, password)):
+            session["is_admin"] = True
+            session["admin_user"] = username
+            return redirect(request.args.get("next") or url_for("admin_upload_page"))
+        error = "Invalid username or password."
+    return render_template("admin_login.html", error=error)
+
+
+@app.route("/admin/logout")
+def admin_logout():
+    session.clear()
+    return redirect(url_for("admin_login"))
+
+
+def _render_admin_upload(summary=None):
+    stats = get_data_stats()
+    recent = get_recent_uploads(10)
+    today = date.today()
+    current_fy_start = bucket_year(today.year, today.month)
+    fy_years = list(range(current_fy_start - 9, current_fy_start + 1))[::-1]
+    return render_template(
+        "admin_upload.html",
+        stats=stats, recent=recent, summary=summary, fy_years=fy_years,
+        display_months=[(m, MONTH_LABEL[m]) for m in DISPLAY_MONTHS],
+        admin_user=session.get("admin_user"), month_label=MONTH_LABEL,
+    )
+
+
+@app.route("/admin/upload", methods=["GET"])
+@admin_required
+def admin_upload_page():
+    return _render_admin_upload()
+
+
+@app.route("/admin/upload/master", methods=["POST"])
+@admin_required
+def admin_upload_master():
+    file = request.files.get("file")
+    try:
+        summary = csv_upload.process_master_csv(file, session.get("admin_user", "admin"))
+        summary["type"] = "master"
+    except csv_upload.UploadError as e:
+        summary = {"type": "master", "error": str(e)}
+    except Exception as e:
+        app.logger.exception("Unexpected error processing master CSV upload")
+        summary = {"type": "master", "error": f"Unexpected error while processing the file: {e}"}
+    return _render_admin_upload(summary=summary)
+
+
+@app.route("/admin/upload/ecr", methods=["POST"])
+@admin_required
+def admin_upload_ecr():
+    file = request.files.get("file")
+    try:
+        fy_year = int(request.form.get("fy_year"))
+        fy_month = int(request.form.get("fy_month"))
+    except (TypeError, ValueError):
+        return _render_admin_upload(
+            summary={"type": "ecr", "error": "Please select a valid Financial Year and Month."}
+        )
+    try:
+        calendar_year = calendar_year_for(fy_year, fy_month)
+        summary = csv_upload.process_ecr_csv(
+            file, session.get("admin_user", "admin"), fy_year, fy_month, calendar_year
+        )
+        summary["type"] = "ecr"
+        summary["fy_label"] = f"{fy_year}-{str(fy_year + 1)[-2:]}"
+        summary["month_label"] = MONTH_LABEL.get(fy_month, "?")
+    except csv_upload.UploadError as e:
+        summary = {"type": "ecr", "error": str(e)}
+    except Exception as e:
+        app.logger.exception("Unexpected error processing ECR CSV upload")
+        summary = {"type": "ecr", "error": f"Unexpected error while processing the file: {e}"}
+    return _render_admin_upload(summary=summary)
 
 
 @app.route("/api/search")
@@ -96,6 +217,9 @@ def api_establishment(est_id):
         "city": est["city"],
         "district": est["district"],
         "pin": est["pin"],
+        "cover_date": est["cover_date"],
+        "industry": est["industry"],
+        "coverage_section": est["coverage_section"],
         "email": est["email"],
         "task_id": est["task_id"],
         "dsc": est["dsc"],
@@ -106,6 +230,5 @@ def api_establishment(est_id):
 
 
 if __name__ == "__main__":
-    import os
     port = int(os.environ.get("PORT", 5001))
     app.run(debug=True, port=port)

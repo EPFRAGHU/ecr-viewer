@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>{% block title %}EPFO ECR Viewer{% endblock %}</title>
+<style>
+  :root { --blue: #0b5394; --border: #d0d7de; --miss: #fdecea; --hit: #eaf6ea; }
+  * { box-sizing: border-box; }
+  html, body { width: 100%; overflow-x: hidden; }
+  body { font-family: Segoe UI, Arial, sans-serif; margin: 0; background: #f5f7fa; color: #1c2733; }
+  header { background: var(--blue); color: white; padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px; }
+  header h1 { margin: 0; font-size: 20px; font-weight: 600; }
+  header .header-right { font-size: 13px; text-align: right; display: flex; align-items: center; gap: 12px; }
+  header .header-right a { color: white; }
+  header .header-right a.btn-link { background: rgba(255,255,255,0.15); padding: 5px 10px; border-radius: 4px; text-decoration: none; }
+  header .header-right a.btn-link:hover { background: rgba(255,255,255,0.28); }
+  .wrap { width: 100%; margin: 0 auto; padding: 20px 24px; border-left: 3px solid var(--blue); border-right: 3px solid var(--blue); min-height: 100vh; }
+  table { border-collapse: collapse; width: 100%; table-layout: fixed; font-size: 11px; }
+  th, td { border: 1px solid var(--border); padding: 3px 2px; text-align: center; white-space: normal; word-break: break-word; overflow: hidden; }
+  th.row-label, td.row-label { width: 90px; }
+  thead th { background: #f8fafc; font-weight: 600; }
+  .missed { background: var(--miss); color: #a33; }
+  .filed { background: var(--hit); }
+  .row-label { text-align: left; font-weight: 600; background: #fafbfc; }
+  {% block extra_style %}{% endblock %}
+</style>
+</head>
+<body>
+<header>
+  <h1>EPFO Establishment ECR Viewer</h1>
+  <div class="header-right">{% block header_right %}{% endblock %}</div>
+</header>
+<div class="wrap">
+{% block content %}{% endblock %}
+</div>
+</body>
+</html>
