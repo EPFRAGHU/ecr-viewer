@@ -269,8 +269,9 @@ def api_establishment(est_id):
         month_cells = []
         for m in DISPLAY_MONTHS:
             cell = months_data.get(m)
+            calendar_year = dy + 1 if m in (1, 2, 3) else dy
             month_cells.append({
-                "month": MONTH_LABEL[m],
+                "month": f"{MONTH_LABEL[m].upper()}-{calendar_year}",
                 "filed": cell is not None,
                 "ecr_count": cell["ecr_count"] if cell else None,
                 "employees": cell["employees"] if cell else None,
