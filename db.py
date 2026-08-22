@@ -47,6 +47,34 @@ establishments = Table(
     Column("dsc", String),
     Column("esn", String),
     Column("form_5a", String),
+    # Fields below are only populated by est_master's admin upload (the full
+    # raw EPFO MIS establishment master export) - ecr-viewer itself doesn't
+    # read or display them, they just live here so both apps share one
+    # establishments table. See docs/superpowers/specs/2026-08-22-shared-establishment-master-design.md.
+    Column("lin_code", String),
+    Column("est_cin", String),
+    Column("pan", String),
+    Column("address2", String),
+    Column("exemption_status", String),
+    Column("est_status", String),
+    Column("est_type", String),
+    Column("actionable_status", String),
+    Column("cont_rate", String),
+    Column("acc_year", String),
+    Column("ind_code", String),
+    Column("ins_group_id", String),
+    Column("ins_task_id", String),
+    Column("enf_group_id", String),
+    Column("enf_task_id", String),
+    Column("acc_grp_id", String),
+    Column("uans", String),
+    Column("er_portal_registered", String),
+    Column("accts", String),
+    Column("aadhaar_seeded", String),
+    Column("aadhaar_verified", String),
+    Column("bank_seeded", String),
+    Column("pan_seeded", String),
+    Column("mobile_seeded", String),
 )
 
 ecr_monthly = Table(
@@ -141,6 +169,11 @@ ESTABLISHMENT_COLUMNS = [
     "est_id", "office_id", "est_name", "address1", "city", "district",
     "pin", "cover_date", "industry", "coverage_section",
     "email", "task_id", "dsc", "esn", "form_5a",
+    "lin_code", "est_cin", "pan", "address2", "exemption_status", "est_status",
+    "est_type", "actionable_status", "cont_rate", "acc_year", "ind_code",
+    "ins_group_id", "ins_task_id", "enf_group_id", "enf_task_id", "acc_grp_id",
+    "uans", "er_portal_registered", "accts", "aadhaar_seeded", "aadhaar_verified",
+    "bank_seeded", "pan_seeded", "mobile_seeded",
 ]
 
 ECR_COLUMNS = ["est_id", "year", "month", "ecr_count", "employees", "contribution"]

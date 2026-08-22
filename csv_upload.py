@@ -39,6 +39,52 @@ ECR_CANDIDATE_COLUMNS = {
     "contribution": ["CONTRIBUTION", "AMOUNT", "AMT", "CONTRIBUTION_AMOUNT", "TOTAL_AMOUNT"],
 }
 
+# db column -> accepted CSV header names. Each list's first entry is this
+# app's original expected header; later entries are the raw EPFO MIS export
+# headers (what est_master's admin upload sends) - both are accepted so
+# neither app's uploads break the other's expected format. See
+# docs/superpowers/specs/2026-08-22-shared-establishment-master-design.md.
+MASTER_COLUMN_ALIASES = {
+    "office_id": ["OFFICE_ID"],
+    "est_name": ["EST_NAME"],
+    "address1": ["ADDRESS_LINE1", "INCROP_ADDRESS1"],
+    "city": ["CITY", "INCROP_CITY"],
+    "district": ["DISTRICT_NAME", "INCROP_DIST"],
+    "pin": ["PIN_CODE", "INCROP_PIN"],
+    "cover_date": ["COVER_DATE"],
+    "industry": ["INDUSTRY", "IND_GROUP_NAME"],
+    "coverage_section": ["COVERAGE_SECTION", "COVER_SECTION_NAME"],
+    "email": ["PRIMARY_EMAIL"],
+    "task_id": ["ACC_TASK_ID"],
+    "dsc": ["DSC"],
+    "esn": ["ESN"],
+    "form_5a": ["F5A"],
+    "lin_code": ["LIN_CODE"],
+    "est_cin": ["EST_CIN"],
+    "pan": ["PAN"],
+    "address2": ["INCROP_ADDRESS2"],
+    "exemption_status": ["EXEMPTION_STATUS_NAME"],
+    "est_status": ["EST_STATUS_NAME"],
+    "est_type": ["EST_TYPE_NAME"],
+    "actionable_status": ["ACTIONABLE_STATUS_NAME"],
+    "cont_rate": ["CONT_RATE_NAME"],
+    "acc_year": ["ACC_YEAR_NAME"],
+    "ind_code": ["IND_CODE_NAME"],
+    "ins_group_id": ["INS_GROUP_ID"],
+    "ins_task_id": ["INS_TASK_ID"],
+    "enf_group_id": ["ENF_GROUP_ID"],
+    "enf_task_id": ["ENF_TASK_ID"],
+    "acc_grp_id": ["ACC_GRP_ID"],
+    "uans": ["UANS"],
+    "er_portal_registered": ["REGISTERED_ON_ER_PORTAL"],
+    "accts": ["ACCTS"],
+    "aadhaar_seeded": ["AADHAAR_SEEDED"],
+    "aadhaar_verified": ["AADHAAR_VERIFIED"],
+    "bank_seeded": ["BANK_SEEDED"],
+    "pan_seeded": ["PAN_SEEDED"],
+    "mobile_seeded": ["MOBILE_SEEDED"],
+}
+
 MONTH_LABEL = {
     1: "Jan", 2: "Feb", 3: "Mar", 4: "Apr", 5: "May", 6: "Jun",
     7: "Jul", 8: "Aug", 9: "Sep", 10: "Oct", 11: "Nov", 12: "Dec",
@@ -94,10 +140,16 @@ def process_master_csv(path, filename, admin_user, progress_cb=None):
 
     try:
         chunks = pd.read_csv(path, dtype=str, chunksize=BATCH_SIZE)
+        resolved_cols = None
         for chunk_idx, chunk in enumerate(chunks):
             chunk.columns = [c.strip().upper() for c in chunk.columns]
-            if chunk_idx == 0 and "EST_ID" not in chunk.columns:
-                raise UploadError("Missing required column: EST_ID")
+            if chunk_idx == 0:
+                if "EST_ID" not in chunk.columns:
+                    raise UploadError("Missing required column: EST_ID")
+                resolved_cols = {
+                    db_col: _match_column(chunk.columns, candidates)
+                    for db_col, candidates in MASTER_COLUMN_ALIASES.items()
+                }
 
             start_row = rows_read + 2  # row 1 is the header
             batch = []
@@ -111,23 +163,10 @@ def process_master_csv(path, filename, admin_user, progress_cb=None):
                     continue
                 est_id = est_id.upper()
                 seen_ids.add(est_id)
-                batch.append({
-                    "est_id": est_id,
-                    "office_id": _clean(row.get("OFFICE_ID")),
-                    "est_name": _clean(row.get("EST_NAME")),
-                    "address1": _clean(row.get("ADDRESS_LINE1")),
-                    "city": _clean(row.get("CITY")),
-                    "district": _clean(row.get("DISTRICT_NAME")),
-                    "pin": _clean(row.get("PIN_CODE")),
-                    "cover_date": _clean(row.get("COVER_DATE")),
-                    "industry": _clean(row.get("INDUSTRY")),
-                    "coverage_section": _clean(row.get("COVERAGE_SECTION")),
-                    "email": _clean(row.get("PRIMARY_EMAIL")),
-                    "task_id": _clean(row.get("ACC_TASK_ID")),
-                    "dsc": _clean(row.get("DSC")),
-                    "esn": _clean(row.get("ESN")),
-                    "form_5a": _clean(row.get("F5A")),
-                })
+                record = {"est_id": est_id}
+                for db_col, csv_col in resolved_cols.items():
+                    record[db_col] = _clean(row.get(csv_col)) if csv_col else None
+                batch.append(record)
             rows_read += len(chunk)
 
             if batch:
